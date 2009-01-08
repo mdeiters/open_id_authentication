@@ -184,12 +184,13 @@ module OpenIdAuthentication
     def extract_registration_data(open_id_response)
       sreg_response = OpenID::SReg::Response.from_success_response(open_id_response)
       ax_response = OpenID::AX::FetchResponse.from_success_response(open_id_response)
-      registration = sreg_response.data.clone
+      registration = sreg_response.data.clone unless sreg_response.nil?
+      registration ||= Hash.new
       ax_response.data.each_pair do |ax_uri, values|
         if AX_URIS_TO_SREG.has_key?(ax_uri)
           registration[AX_URIS_TO_SREG[ax_uri]] = [*values].first unless values.blank?
         end
-      end
+      end unless ax_response.nil?
       registration
     end
 
