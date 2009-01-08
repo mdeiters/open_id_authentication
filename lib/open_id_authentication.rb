@@ -1,5 +1,6 @@
 require 'uri'
 require 'openid/extensions/sreg'
+require 'openid/extensions/ax'
 require 'openid/store/filesystem'
 
 require File.dirname(__FILE__) + '/open_id_authentication/db_store'
@@ -9,6 +10,21 @@ require File.dirname(__FILE__) + '/open_id_authentication/timeout_fixes' if Open
 
 module OpenIdAuthentication
   OPEN_ID_AUTHENTICATION_DIR = RAILS_ROOT + "/tmp/openids"
+  
+  #simple registration fields mapped to attribute exchange URIs according to http://www.axschema.org/types/
+  SREG_TO_AX_URIS = {
+    'nickname' => 'http://axschema.org/namePerson/friendly',
+    'email'    => 'http://axschema.org/contact/email',
+    'fullname' => 'http://axschema.org/namePerson',
+    'dob'      => 'http://axschema.org/birthDate',
+    'gender'   => 'http://axschema.org/person/gender',
+    'postcode' => 'http://axschema.org/contact/postalCode/home',
+    'country'  => 'http://axschema.org/contact/country/home',
+    'language' => 'http://axschema.org/pref/language',
+    'timezone' => 'http://axschema.org/pref/timezone'
+  }
+
+  AX_URIS_TO_SREG = SREG_TO_AX_URIS.invert
 
   def self.store
     @@store
@@ -138,6 +154,7 @@ module OpenIdAuthentication
 
       open_id_request = open_id_consumer.begin(identity_url)
       add_simple_registration_fields(open_id_request, options)
+      add_attribute_exchange_fields(open_id_request, options)
       redirect_to(open_id_redirect_url(open_id_request, return_to, method))
     rescue OpenIdAuthentication::InvalidOpenId => e
       yield Result[:invalid], identity_url, nil
@@ -154,7 +171,7 @@ module OpenIdAuthentication
 
       case open_id_response.status
       when OpenID::Consumer::SUCCESS
-        yield Result[:successful], identity_url, OpenID::SReg::Response.from_success_response(open_id_response)
+        yield Result[:successful], identity_url, extract_registration_data(open_id_response)
       when OpenID::Consumer::CANCEL
         yield Result[:canceled], identity_url, nil
       when OpenID::Consumer::FAILURE
@@ -162,6 +179,18 @@ module OpenIdAuthentication
       when OpenID::Consumer::SETUP_NEEDED
         yield Result[:setup_needed], open_id_response.setup_url, nil
       end
+    end
+    
+    def extract_registration_data(open_id_response)
+      sreg_response = OpenID::SReg::Response.from_success_response(open_id_response)
+      ax_response = OpenID::AX::FetchResponse.from_success_response(open_id_response)
+      registration = sreg_response.data.clone
+      ax_response.data.each_pair do |ax_uri, values|
+        if AX_URIS_TO_SREG.has_key?(ax_uri)
+          registration[AX_URIS_TO_SREG[ax_uri]] = [*values].first unless values.blank?
+        end
+      end
+      registration
     end
 
     def open_id_consumer
@@ -174,6 +203,17 @@ module OpenIdAuthentication
       sreg_request.request_fields(Array(fields[:optional]).map(&:to_s), false) if fields[:optional]
       sreg_request.policy_url = fields[:policy_url] if fields[:policy_url]
       open_id_request.add_extension(sreg_request)
+    end
+    
+    def add_attribute_exchange_fields(open_id_request, fields)
+      ax_request = OpenID::AX::FetchRequest.new
+      fields[:required].each do |field|
+        ax_request.add(OpenID::AX::AttrInfo.new(SREG_TO_AX_URIS[field.to_s], nil, true)) if SREG_TO_AX_URIS[field.to_s]
+      end if fields[:required]
+      fields[:optional].each do |field|
+        ax_request.add(OpenID::AX::AttrInfo.new(SREG_TO_AX_URIS[field.to_s], nil, false)) if SREG_TO_AX_URIS[field.to_s]
+      end if fields[:optional]
+      open_id_request.add_extension(ax_request)
     end
 
     def open_id_redirect_url(open_id_request, return_to = nil, method = nil)
